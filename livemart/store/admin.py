@@ -1,26 +1,24 @@
 from django.contrib import admin
 from .models import Category, Product, Inventory, Feedback
 
-# --- PHASE 3: Admin Dashboard Setup ---
-# Registering the store models
+@admin.register(Category)
+class CategoryAdmin(admin.ModelAdmin):
+    list_display = ('name', 'description')
 
+@admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ['name', 'category', 'is_region_specific']
-    list_filter = ['category', 'is_region_specific']
-    search_fields = ['name', 'description']
+    list_display = ('name', 'category', 'is_region_specific')
+    list_filter = ('category', 'is_region_specific')
+    search_fields = ('name', 'description')
 
+@admin.register(Inventory)
 class InventoryAdmin(admin.ModelAdmin):
-    list_display = ['product', 'retailer', 'wholesaler', 'price', 'stock']
-    list_filter = ['retailer', 'wholesaler']
-    search_fields = ['product__name', 'retailer__shop_name', 'wholesaler__business_name']
+    list_display = ('product', 'retailer', 'wholesaler', 'price', 'stock')
+    list_filter = ('retailer', 'wholesaler')
+    search_fields = ('product__name',)
 
+@admin.register(Feedback)
 class FeedbackAdmin(admin.ModelAdmin):
-    list_display = ['product', 'customer', 'rating', 'created_at']
-    list_filter = ['rating', 'created_at']
-    search_fields = ['product__name', 'customer__username']
+    list_display = ('product', 'customer', 'rating', 'created_at')
+    list_filter = ('product', 'customer', 'rating')
 
-
-admin.site.register(Category)
-admin.site.register(Product, ProductAdmin)
-admin.site.register(Inventory, InventoryAdmin)
-admin.site.register(Feedback, FeedbackAdmin)
