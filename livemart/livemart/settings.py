@@ -112,7 +112,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
-USE_I18N = True
+USE_I1N = True
 USE_TZ = True
 
 
@@ -151,8 +151,16 @@ REST_FRAMEWORK = {
     ]
 }
 
-# 3. Required by dj-rest-auth (sends emails to console)
+# --- ADDED THIS BLOCK ---
+# 3. Tell dj-rest-auth to use our new custom registration serializer
+REST_AUTH = {
+    'REGISTER_SERIALIZER': 'users.serializers.CustomRegisterSerializer',
+}
+# --- END ADDED BLOCK ---
+
+
+# 4. Required by dj-rest-auth (sends emails to console)
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
-# 4. Required by allauth
+# 5. Required by allauth
 SITE_ID = 1

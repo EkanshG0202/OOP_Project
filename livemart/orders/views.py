@@ -1,59 +1,69 @@
 from rest_framework import viewsets, permissions, mixins, status
 from rest_framework.response import Response
 from rest_framework.serializers import ValidationError
+from rest_framework.decorators import action
 from django.db import transaction
 
-from .models import Cart, CartItem, Order, OrderItem
-from .serializers import CartSerializer, CartItemSerializer, OrderSerializer
-from users.models import CustomerProfile
-from store.models import Inventory # We need this for checkout
+from .models import (
+    Cart, CartItem, Order, OrderItem,
+    WholesaleCart, WholesaleCartItem, WholesaleOrder, WholesaleOrderItem
+)
+from .serializers import (
+    CartSerializer, CartItemSerializer, OrderSerializer, OrderItemSerializer,
+    RetailerOrderSerializer, RetailerOrderItemSerializer,
+    WholesaleCartSerializer, WholesaleCartItemSerializer, WholesaleOrderSerializer,
+    WholesalerFulfillmentItemSerializer # --- IMPORTED ---
+)
+from users.models import CustomerProfile, RetailerProfile, WholesalerProfile
+from store.models import Inventory
 
-# --- PHASE 5: Cart Item Management ---
+# --- Import our custom permissions ---
+from users.permissions import IsCustomer, IsRetailer, IsWholesaler
+
+# =========================================
+# === CUSTOMER-FACING VIEWS
+# =========================================
 
 class CartItemViewSet(viewsets.ModelViewSet):
     """
     API endpoint for adding, updating, and removing items
     from the user's cart.
+    ACCESS: Customers only.
     """
     serializer_class = CartItemSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsCustomer]
 
     def get_queryset(self):
-        """
-        Users can only see and manage their own cart items.
-        """
+        """ Users can only see and manage their own cart items. """
         try:
-            return CartItem.objects.filter(cart__customer__user=self.request.user)
+            return CartItem.objects.filter(cart__customer=self.request.user.customerprofile)
         except CustomerProfile.DoesNotExist:
             return CartItem.objects.none()
 
     def create(self, request, *args, **kwargs):
-        """
-        Custom logic for adding an item to the cart.
-        If the item is already in the cart, we just update the quantity.
-        """
+        """ Custom logic for adding an item to the cart. """
         try:
             profile = request.user.customerprofile
             cart, _ = Cart.objects.get_or_create(customer=profile)
         except CustomerProfile.DoesNotExist:
-            return Response({"error": "Customer profile not found."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Customer profile not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        
-        inventory_id = serializer.validated_data['inventory_id']
-        quantity = serializer.validated_data['quantity']
+        inventory_id = request.data.get('inventory_id')
+        quantity = int(request.data.get('quantity', 1))
+
+        if not inventory_id:
+            return Response({"error": "inventory_id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            inventory = Inventory.objects.get(id=inventory_id)
+            # Customers can only buy from retailers
+            inventory = Inventory.objects.get(
+                id=inventory_id, 
+                stock__gt=0, 
+                retailer__isnull=False
+            )
         except Inventory.DoesNotExist:
-            return Response({"error": "Inventory item not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Retailer inventory item not found or is out of stock."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Check if item is in stock
-        if inventory.stock < quantity:
-            return Response({"error": f"Not enough stock for {inventory.product.name}. Only {inventory.stock} left."}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Get or create the cart item
         cart_item, created = CartItem.objects.get_or_create(
             cart=cart,
             inventory=inventory,
@@ -61,59 +71,127 @@ class CartItemViewSet(viewsets.ModelViewSet):
         )
 
         if not created:
-            # If item already in cart, update quantity
-            total_quantity = cart_item.quantity + quantity
-            if inventory.stock < total_quantity:
-                return Response({"error": f"Not enough stock. You already have {cart_item.quantity} in cart and stock is {inventory.stock}."}, status=status.HTTP_400_BAD_REQUEST)
-            cart_item.quantity = total_quantity
+            cart_item.quantity += quantity
             cart_item.save()
-            serializer = self.get_serializer(cart_item) # Reserialize with updated data
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        
+
+        if cart_item.quantity > inventory.stock:
+            return Response(
+                {"error": f"Not enough stock. Only {inventory.stock} available."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = self.get_serializer(cart_item)
         headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+        return Response(serializer.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK, headers=headers)
 
 
 class CartViewSet(mixins.RetrieveModelMixin,
                   mixins.ListModelMixin,
                   viewsets.GenericViewSet):
     """
-    API endpoint for retrieving the user's shopping cart.
-    (This is unchanged from before, but kept for clarity)
+    API endpoint for viewing the user's cart.
+    Provides a custom 'checkout' action.
+    ACCESS: Customers only.
     """
     serializer_class = CartSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsCustomer]
 
     def get_queryset(self):
         try:
-            profile = self.request.user.customerprofile
-            return Cart.objects.filter(customer=profile)
+            return Cart.objects.filter(customer=self.request.user.customerprofile)
         except CustomerProfile.DoesNotExist:
             return Cart.objects.none()
 
     def get_object(self):
-        profile, _ = CustomerProfile.objects.get_or_create(user=self.request.user)
-        cart, _ = Cart.objects.get_or_create(customer=profile)
+        cart, _ = Cart.objects.get_or_create(customer=self.request.user.customerprofile)
         return cart
 
     def list(self, request, *args, **kwargs):
-        return self.retrieve(request, *args, **kwargs)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def checkout(self, request, pk=None):
+        """ Converts the user's cart into an order. """
+        try:
+            cart = self.get_object()
+        except CustomerProfile.DoesNotExist:
+            return Response({"error": "Customer profile not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not cart.items.exists():
+            return Response({"error": "Your cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
+
+        shipping_address = request.data.get('shipping_address', cart.customer.address)
+        is_offline_payment = bool(request.data.get('is_offline_payment', False))
+
+        if not shipping_address:
+            return Response(
+                {"error": "Shipping address is required. Please provide one or update your profile."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        order_items_to_create = []
+        total_price = 0
+
+        try:
+            with transaction.atomic():
+                order = Order.objects.create(
+                    customer=cart.customer,
+                    status=Order.OrderStatus.PENDING,
+                    total_price=0,
+                    shipping_address=shipping_address,
+                    is_offline_payment=is_offline_payment
+                )
+
+                cart_items = cart.items.all()
+                inventory_ids = [item.inventory_id for item in cart_items]
+                inventories = Inventory.objects.select_for_update().filter(id__in=inventory_ids)
+                inventory_map = {inv.id: inv for inv in inventories}
+
+                for item in cart_items:
+                    inventory = inventory_map.get(item.inventory_id)
+
+                    if not inventory or item.quantity > inventory.stock:
+                        raise ValidationError(f"Sorry, '{item.inventory.product.name}' is out of stock. Only {inventory.stock} left.")
+
+                    inventory.stock -= item.quantity
+                    inventory.save()
+
+                    price_at_purchase = inventory.price
+                    total_price += (price_at_purchase * item.quantity)
+                    
+                    order_items_to_create.append(
+                        OrderItem(
+                            order=order,
+                            inventory=inventory,
+                            quantity=item.quantity,
+                            price_at_purchase=price_at_purchase
+                            # Status defaults to PENDING
+                        )
+                    )
+
+                order.total_price = total_price
+                order.save()
+                OrderItem.objects.bulk_create(order_items_to_create)
+                cart.items.all().delete()
+
+            order_serializer = OrderSerializer(order)
+            return Response(order_serializer.data, status=status.HTTP_201_CREATED)
+
+        except ValidationError as e:
+            return Response({"error": str(e.detail[0])}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"error": f"An error occurred during checkout: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# --- PHASE 5: Transactional Checkout Logic ---
-
-class OrderViewSet(mixins.RetrieveModelMixin,
-                  mixins.ListModelMixin,
-                  mixins.CreateModelMixin,
-                  viewsets.GenericViewSet):
+class OrderViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    API endpoint for placing and viewing orders.
-    'list' = get all my orders
-    'retrieve' = get one specific order
-    'create' = place a new order (THE CHECKOUT)
+    API endpoint for viewing a customer's order history.
+    ACCESS: Customers only.
     """
     serializer_class = OrderSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsCustomer]
 
     def get_queryset(self):
         try:
@@ -121,87 +199,267 @@ class OrderViewSet(mixins.RetrieveModelMixin,
         except CustomerProfile.DoesNotExist:
             return Order.objects.none()
 
-    def perform_create(self, serializer):
+# =========================================
+# === RETAILER-FACING VIEWS
+# =========================================
+
+class RetailerOrderViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint for a Retailer to view orders
+    that contain their products.
+    ACCESS: Retailers only.
+    """
+    serializer_class = RetailerOrderSerializer
+    permission_classes = [permissions.IsAuthenticated, IsRetailer]
+
+    def get_queryset(self):
+        try:
+            return Order.objects.filter(
+                items__inventory__retailer=self.request.user.retailerprofile
+            ).distinct().order_by('-created_at')
+        except RetailerProfile.DoesNotExist:
+            return Order.objects.none()
+    
+    def get_serializer_context(self):
+        return {'request': self.request}
+
+
+class RetailerOrderItemViewSet(viewsets.ModelViewSet): # --- UPDATED: Was ReadOnly ---
+    """
+    API endpoint for a Retailer to view and UPDATE the status
+    of *individual order items* that belong to them.
+    ACCESS: Retailers only.
+    """
+    serializer_class = RetailerOrderItemSerializer
+    permission_classes = [permissions.IsAuthenticated, IsRetailer]
+    
+    # --- ADDED: Allow GET, PATCH, PUT. Disallow POST, DELETE. ---
+    http_method_names = ['get', 'patch', 'put', 'head', 'options']
+
+    def get_queryset(self):
         """
-        This is the main "Checkout" logic.
-        We override this method to run our transactional checkout.
+        Retailers can only see and update order items 
+        from their inventory.
         """
         try:
-            profile = self.request.user.customerprofile
-            cart = profile.cart
-        except (CustomerProfile.DoesNotExist, Cart.DoesNotExist):
-            raise ValidationError("User profile or cart not found.")
+            return OrderItem.objects.filter(
+                inventory__retailer=self.request.user.retailerprofile
+            ).select_related(
+                'order', 
+                'order__customer__user', 
+                'inventory__product'
+            ).order_by('-order__created_at')
+        except RetailerProfile.DoesNotExist:
+            return OrderItem.objects.none()
 
-        cart_items = cart.items.all()
-        if not cart_items.exists():
-            raise ValidationError("Your cart is empty.")
 
-        total_price = 0
+# =========================================
+# === WHOLESALE-FACING VIEWS
+# =========================================
+
+class WholesaleCartItemViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint for Retailers to add, update, and remove
+    items from their *wholesale* cart.
+    ACCESS: Retailers only.
+    """
+    serializer_class = WholesaleCartItemSerializer
+    permission_classes = [permissions.IsAuthenticated, IsRetailer]
+
+    def get_queryset(self):
+        try:
+            return WholesaleCartItem.objects.filter(cart__retailer=self.request.user.retailerprofile)
+        except RetailerProfile.DoesNotExist:
+            return WholesaleCartItem.objects.none()
+
+    def create(self, request, *args, **kwargs):
+        """ Custom logic for adding to wholesale cart """
+        try:
+            profile = request.user.retailerprofile
+            cart, _ = WholesaleCart.objects.get_or_create(retailer=profile)
+        except RetailerProfile.DoesNotExist:
+            return Response({"error": "Retailer profile not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        inventory_id = request.data.get('inventory_id')
+        quantity = int(request.data.get('quantity', 1))
+
+        if not inventory_id:
+            return Response({"error": "inventory_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # Retailers can ONLY buy from wholesalers
+            inventory = Inventory.objects.get(
+                id=inventory_id, 
+                stock__gt=0,
+                wholesaler__isnull=False
+            )
+        except Inventory.DoesNotExist:
+            return Response({"error": "Wholesaler inventory item not found or is out of stock."}, status=status.HTTP_404_NOT_FOUND)
+        
+        cart_item, created = WholesaleCartItem.objects.get_or_create(
+            cart=cart,
+            inventory=inventory,
+            defaults={'quantity': quantity}
+        )
+
+        if not created:
+            cart_item.quantity += quantity
+            cart_item.save()
+
+        if cart_item.quantity > inventory.stock:
+            return Response(
+                {"error": f"Not enough stock. Only {inventory.stock} available."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        serializer = self.get_serializer(cart_item)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK, headers=headers)
+
+
+class WholesaleCartViewSet(mixins.RetrieveModelMixin,
+                           mixins.ListModelMixin,
+                           viewsets.GenericViewSet):
+    """
+    API endpoint for a Retailer to view their wholesale cart
+    and checkout.
+    ACCESS: Retailers only.
+    """
+    serializer_class = WholesaleCartSerializer
+    permission_classes = [permissions.IsAuthenticated, IsRetailer]
+
+    def get_queryset(self):
+        try:
+            return WholesaleCart.objects.filter(retailer=self.request.user.retailerprofile)
+        except RetailerProfile.DoesNotExist:
+            return WholesaleCart.objects.none()
+
+    def get_object(self):
+        cart, _ = WholesaleCart.objects.get_or_create(retailer=self.request.user.retailerprofile)
+        return cart
+
+    def list(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def checkout(self, request, pk=None):
+        """
+Copies the Retailer's wholesale cart into a WholesaleOrder.
+        """
+        try:
+            cart = self.get_object()
+        except RetailerProfile.DoesNotExist:
+            return Response({"error": "Retailer profile not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not cart.items.exists():
+            return Response({"error": "Your wholesale cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            delivery_address = cart.retailer.user.customerprofile.address
+            if not delivery_address:
+                raise CustomerProfile.DoesNotExist
+        except CustomerProfile.DoesNotExist:
+             return Response(
+                {"error": "No delivery address found. Please update your customer profile address."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         order_items_to_create = []
+        total_price = 0
 
         try:
-            # --- START DATABASE TRANSACTION ---
-            # This ensures that if *any* part of the checkout fails
-            # (e.g., one item is out of stock), the *entire*
-            # transaction is rolled back. No partial orders.
             with transaction.atomic():
-                
-                # 1. Save the Order instance first
-                # The serializer already validated shipping_address, etc.
-                order = serializer.save(
-                    customer=profile,
-                    total_price=0 # We will calculate and update this
+                order = WholesaleOrder.objects.create(
+                    retailer=cart.retailer,
+                    status=WholesaleOrder.OrderStatus.PENDING,
+                    total_price=0,
+                    delivery_address=delivery_address
                 )
 
-                # 2. Loop through cart items, check stock, and prepare OrderItems
+                cart_items = cart.items.all()
+                inventory_ids = [item.inventory_id for item in cart_items]
+                inventories = Inventory.objects.select_for_update().filter(id__in=inventory_ids)
+                inventory_map = {inv.id: inv for inv in inventories}
+
                 for item in cart_items:
-                    
-                    # --- CRITICAL: Lock the inventory row ---
-                    # This prevents race conditions, e.g., two users
-                    # buying the last item at the exact same time.
-                    try:
-                        inventory = Inventory.objects.select_for_update().get(id=item.inventory.id)
-                    except Inventory.DoesNotExist:
-                        raise ValidationError(f"Item {item.inventory.product.name} is no longer available.")
+                    inventory = inventory_map.get(item.inventory_id)
 
-                    # 3. Check stock
-                    if inventory.stock < item.quantity:
-                        raise ValidationError(f"Not enough stock for {inventory.product.name}. Only {inventory.stock} left.")
+                    if not inventory or item.quantity > inventory.stock:
+                        raise ValidationError(f"Sorry, '{item.inventory.product.name}' from wholesaler is out of stock.")
 
-                    # 4. Decrement stock
                     inventory.stock -= item.quantity
                     inventory.save()
-
-                    # 5. Calculate price and add to total
                     price_at_purchase = inventory.price
                     total_price += (price_at_purchase * item.quantity)
                     
-                    # 6. Prepare the OrderItem to be created
                     order_items_to_create.append(
-                        OrderItem(
+                        WholesaleOrderItem(
                             order=order,
                             inventory=inventory,
                             quantity=item.quantity,
                             price_at_purchase=price_at_purchase
+                            # Status defaults to PENDING
                         )
                     )
 
-                # 7. Update the order's total price
                 order.total_price = total_price
                 order.save()
-
-                # 8. Bulk create all OrderItems in one efficient query
-                OrderItem.objects.bulk_create(order_items_to_create)
-
-                # 9. Clear the user's cart
+                WholesaleOrderItem.objects.bulk_create(order_items_to_create)
                 cart.items.all().delete()
 
-            # --- END DATABASE TRANSACTION ---
-            
-        except ValidationError as e:
-            # If we raised a stock error, reraise it
-            raise e
-        except Exception as e:
-            # Catch any other unexpected errors
-            raise ValidationError(f"An error occurred during checkout: {str(e)}")
+            order_serializer = WholesaleOrderSerializer(order)
+            return Response(order_serializer.data, status=status.HTTP_201_CREATED)
 
+        except ValidationError as e:
+            return Response({"error": str(e.detail[0])}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"error": f"An error occurred during checkout: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class WholesaleOrderViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint for a Retailer to view their past wholesale orders.
+    ACCESS: Retailers only.
+    """
+    serializer_class = WholesaleOrderSerializer
+    permission_classes = [permissions.IsAuthenticated, IsRetailer]
+
+    def get_queryset(self):
+        try:
+            return WholesaleOrder.objects.filter(retailer=self.request.user.retailerprofile).order_by('-created_at')
+        except RetailerProfile.DoesNotExist:
+            return WholesaleOrder.objects.none()
+
+# =========================================
+# === WHOLESALER-FACING VIEWS (NEW)
+# =========================================
+
+class WholesalerFulfillmentViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint for a Wholesaler to view and UPDATE the status
+    of *individual order items* that belong to them.
+    ACCESS: Wholesalers only.
+    """
+    serializer_class = WholesalerFulfillmentItemSerializer
+    permission_classes = [permissions.IsAuthenticated, IsWholesaler]
+    
+    # Allow GET, PATCH, PUT. Disallow POST, DELETE.
+    http_method_names = ['get', 'patch', 'put', 'head', 'options']
+
+    def get_queryset(self):
+        """
+        Wholesalers can only see and update order items
+        from their inventory.
+        """
+        try:
+            return WholesaleOrderItem.objects.filter(
+                inventory__wholesaler=self.request.user.wholesalerprofile
+            ).select_related(
+                'order', 
+                'order__retailer__user', 
+                'inventory__product'
+            ).order_by('-order__created_at')
+        except WholesalerProfile.DoesNotExist:
+            return WholesaleOrderItem.objects.none()

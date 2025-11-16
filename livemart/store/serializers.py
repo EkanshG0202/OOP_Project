@@ -22,6 +22,14 @@ class InventorySerializer(serializers.ModelSerializer):
     # It shows the full Product details, not just the product ID.
     product = ProductSerializer(read_only=True)
     
+    # --- ADDED FOR CREATE/UPDATE ---
+    # This write-only field maps to the 'product' model field on create/update
+    product_id = serializers.PrimaryKeyRelatedField(
+        queryset=Product.objects.all(),
+        source='product',
+        write_only=True
+    )
+    
     # This adds a new field to the API, pulling data from a related model
     retailer_name = serializers.CharField(source='retailer.shop_name', read_only=True)
     wholesaler_name = serializers.CharField(source='wholesaler.business_name', read_only=True)
@@ -30,7 +38,8 @@ class InventorySerializer(serializers.ModelSerializer):
         model = Inventory
         fields = [
             'id', 
-            'product', 
+            'product',
+            'product_id', # Added for writing
             'retailer', 
             'retailer_name', 
             'wholesaler',
@@ -39,6 +48,10 @@ class InventorySerializer(serializers.ModelSerializer):
             'stock',
             'available_via_wholesaler'
         ]
+        # --- ADDED ---
+        # The view will set retailer/wholesaler automatically from the user
+        read_only_fields = ['retailer', 'wholesaler']
+
 
 class FeedbackSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.username', read_only=True)
@@ -47,4 +60,3 @@ class FeedbackSerializer(serializers.ModelSerializer):
         model = Feedback
         fields = ['id', 'product', 'customer', 'customer_name', 'rating', 'comment', 'created_at']
         read_only_fields = ['customer'] # Customer is set automatically
-

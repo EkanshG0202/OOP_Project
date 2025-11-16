@@ -1,11 +1,12 @@
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets, permissions, filters
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import filters
 from .models import Category, Product, Inventory, Feedback
 from .serializers import CategorySerializer, ProductSerializer, InventorySerializer, FeedbackSerializer
 
+# --- Import our new custom permissions ---
+from users.permissions import IsCustomer, IsSeller, IsOwnerOfInventory, IsOwnerOfFeedbackOrReadOnly
+
 # --- API Views (Store) ---
-# A ViewSet automatically provides list, create, retrieve, update, delete
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -26,22 +27,14 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
     filterset_fields = ['category', 'is_region_specific'] # Filter by ?category=1
     search_fields = ['name', 'description'] # Search by ?search=milk
 
-class InventoryViewSet(viewsets.ReadOnlyModelViewSet):
+class InventoryViewSet(viewsets.ModelViewSet): # <-- CHANGED from ReadOnlyModelViewSet
     """
-    API endpoint to view all available inventory items.
-    This is the main endpoint customers will browse.
-    
-    Provides filtering for:
-    - ?product=1
-    - ?retailer=1
-    - ?price__gt=100 (price greater than)
-    - ?price__lt=500 (price less than)
-    - ?product__category=2
-    - ?search=amul (searches product name)
+    API endpoint to view and manage inventory.
+    - ALL users can list and retrieve (read).
+    - SELLERS (Retailer/Wholesaler) can create inventory.
+    - The OWNER of an inventory item can update or delete it.
     """
-    queryset = Inventory.objects.filter(stock__gt=0) # Only show items in stock
     serializer_class = InventorySerializer
-    permission_classes = [permissions.AllowAny]
     
     # --- This enables Module 3: Search & Navigation ---
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
@@ -53,15 +46,75 @@ class InventoryViewSet(viewsets.ReadOnlyModelViewSet):
     }
     search_fields = ['product__name']
 
+    def get_queryset(self):
+        """
+        - Customers/Anonymous users see all *in-stock* items.
+        - A Seller (Retailer/Wholesaler) sees *all* of their own items,
+          including out-of-stock items, so they can manage them.
+        """
+        user = self.request.user
+        
+        if user.is_authenticated and user.role in ['RETAILER', 'WHOLESALER']:
+            if user.role == 'RETAILER':
+                return Inventory.objects.filter(retailer=user.retailerprofile)
+            else: # Wholesaler
+                return Inventory.objects.filter(wholesaler=user.wholesalerprofile)
+        
+        # For customers or anonymous users
+        return Inventory.objects.filter(stock__gt=0)
+
+    def get_permissions(self):
+        """
+        Instantiates and returns the list of permissions that this view requires.
+        - list, retrieve: AllowAny
+        - create: IsAuthenticated, IsSeller
+        - update, destroy: IsAuthenticated, IsSeller, IsOwnerOfInventory
+        """
+        if self.action in ['list', 'retrieve']:
+            permission_classes = [permissions.AllowAny]
+        elif self.action == 'create':
+            permission_classes = [permissions.IsAuthenticated, IsSeller]
+        else: # 'update', 'partial_update', 'destroy'
+            permission_classes = [permissions.IsAuthenticated, IsSeller, IsOwnerOfInventory]
+        return [permission() for permission in permission_classes]
+
+    def perform_create(self, serializer):
+        """
+        Automatically link new inventory to the logged-in seller.
+        The 'product' is set via 'product_id' in the serializer.
+        """
+        user = self.request.user
+        if user.role == 'RETAILER':
+            serializer.save(retailer=user.retailerprofile)
+        elif user.role == 'WHOLESALER':
+            serializer.save(wholesaler=user.wholesalerprofile)
+
 
 class FeedbackViewSet(viewsets.ModelViewSet):
     """
     API endpoint for reading and writing product feedback.
+    - ALL users can read feedback.
+    - CUSTOMERS can create feedback.
+    - The OWNER of feedback can update or delete it.
     """
     queryset = Feedback.objects.all()
     serializer_class = FeedbackSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly] # Must be logged in to post
     
+    def get_permissions(self):
+        """
+        Instantiates and returns the list of permissions that this view requires.
+        - list, retrieve: AllowAny
+        - create: IsAuthenticated, IsCustomer
+        - update, destroy: IsAuthenticated, IsCustomer, IsOwnerOfFeedbackOrReadOnly
+        """
+        if self.action in ['list', 'retrieve']:
+            permission_classes = [permissions.AllowAny]
+        elif self.action == 'create':
+            permission_classes = [permissions.IsAuthenticated, IsCustomer]
+        else: # 'update', 'partial_update', 'destroy'
+            permission_classes = [permissions.IsAuthenticated, IsOwnerOfFeedbackOrReadOnly]
+        return [permission() for permission in permission_classes]
+
     def get_queryset(self):
         # Allow filtering feedback by product
         # e.g., /api/feedback/?product=1
@@ -74,4 +127,3 @@ class FeedbackViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         # Automatically set the customer to the logged-in user
         serializer.save(customer=self.request.user)
-
