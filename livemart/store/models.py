@@ -65,3 +65,14 @@ class Feedback(models.Model):
     def __str__(self):
         return f"Feedback for {self.product.name} by {self.customer.username}"
 
+# ... existing imports ...
+
+class Inventory(models.Model):
+    # ... existing fields (product, retailer, wholesaler, price, stock) ...
+    
+    # --- ADD THIS FIELD ---
+    availability_date = models.DateField(null=True, blank=True, help_text="Date when the item will be available if out of stock.")
+    # ----------------------
+
+    def __str__(self):
+        return f"{self.product.name} - {self.price}"

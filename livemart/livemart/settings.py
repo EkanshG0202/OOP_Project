@@ -157,6 +157,25 @@ REST_AUTH = {
     'REGISTER_SERIALIZER': 'users.serializers.CustomRegisterSerializer',
 }
 # --- END ADDED BLOCK ---
+# --- Allauth settings for Email Verification (as OTP) ---
+
+# This is the key setting: "mandatory" requires email verification to log in.
+ACCOUNT_EMAIL_VERIFICATION = 'mandatory'
+
+# Users will be required to provide an email during registration
+ACCOUNT_EMAIL_REQUIRED = True
+
+# Allows users to log in using either their username or email
+ACCOUNT_AUTHENTICATION_METHOD = 'username_email'
+
+# Optional: Logs the user in immediately after they click the verification link
+LOGIN_ON_EMAIL_CONFIRMATION = True
+
+# Optional: Confirms the email just by clicking the link (no "Confirm" button)
+ACCOUNT_CONFIRM_EMAIL_ON_GET = True
+
+# We're using the console backend for testing (already in your settings)
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
 
 # 4. Required by dj-rest-auth (sends emails to console)

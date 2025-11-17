@@ -46,7 +46,8 @@ class InventorySerializer(serializers.ModelSerializer):
             'wholesaler_name',
             'price', 
             'stock',
-            'available_via_wholesaler'
+            'available_via_wholesaler',
+            'availability_date', # <--- ADDED THIS FIELD
         ]
         # --- ADDED ---
         # The view will set retailer/wholesaler automatically from the user
