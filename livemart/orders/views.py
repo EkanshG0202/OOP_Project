@@ -4,6 +4,11 @@ from rest_framework.serializers import ValidationError
 from rest_framework.decorators import action
 from django.db import transaction
 
+# --- ADDED IMPORTS FOR EMAIL ---
+from django.core.mail import send_mail
+from django.conf import settings
+# -------------------------------
+
 from .models import (
     Cart, CartItem, Order, OrderItem,
     WholesaleCart, WholesaleCartItem, WholesaleOrder, WholesaleOrderItem
@@ -12,7 +17,7 @@ from .serializers import (
     CartSerializer, CartItemSerializer, OrderSerializer, OrderItemSerializer,
     RetailerOrderSerializer, RetailerOrderItemSerializer,
     WholesaleCartSerializer, WholesaleCartItemSerializer, WholesaleOrderSerializer,
-    WholesalerFulfillmentItemSerializer # --- IMPORTED ---
+    WholesalerFulfillmentItemSerializer 
 )
 from users.models import CustomerProfile, RetailerProfile, WholesalerProfile
 from store.models import Inventory
@@ -224,7 +229,7 @@ class RetailerOrderViewSet(viewsets.ReadOnlyModelViewSet):
         return {'request': self.request}
 
 
-class RetailerOrderItemViewSet(viewsets.ModelViewSet): # --- UPDATED: Was ReadOnly ---
+class RetailerOrderItemViewSet(viewsets.ModelViewSet):
     """
     API endpoint for a Retailer to view and UPDATE the status
     of *individual order items* that belong to them.
@@ -233,7 +238,7 @@ class RetailerOrderItemViewSet(viewsets.ModelViewSet): # --- UPDATED: Was ReadOn
     serializer_class = RetailerOrderItemSerializer
     permission_classes = [permissions.IsAuthenticated, IsRetailer]
     
-    # --- ADDED: Allow GET, PATCH, PUT. Disallow POST, DELETE. ---
+    # Allow GET, PATCH, PUT. Disallow POST, DELETE.
     http_method_names = ['get', 'patch', 'put', 'head', 'options']
 
     def get_queryset(self):
@@ -251,6 +256,27 @@ class RetailerOrderItemViewSet(viewsets.ModelViewSet): # --- UPDATED: Was ReadOn
             ).order_by('-order__created_at')
         except RetailerProfile.DoesNotExist:
             return OrderItem.objects.none()
+
+    # --- ADDED: Email Notification Logic ---
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        
+        if instance.status == 'DELIVERED':
+            try:
+                subject = f'Live MART: Order #{instance.order.id} - Item Delivered'
+                message = (
+                    f'Hi {instance.order.customer.user.username},\n\n'
+                    f'Your item "{instance.inventory.product.name}" from Order #{instance.order.id} '
+                    f'has been successfully delivered.\n\n'
+                    f'Thank you for shopping with Live MART!'
+                )
+                from_email = settings.DEFAULT_FROM_EMAIL or 'noreply@livemart.com'
+                recipient_list = [instance.order.customer.user.email]
+
+                send_mail(subject, message, from_email, recipient_list)
+                print(f"--- Email sent to {instance.order.customer.user.email} ---")
+            except Exception as e:
+                print(f"Failed to send email: {e}")
 
 
 # =========================================
@@ -332,134 +358,7 @@ class WholesaleCartViewSet(mixins.RetrieveModelMixin,
         try:
             return WholesaleCart.objects.filter(retailer=self.request.user.retailerprofile)
         except RetailerProfile.DoesNotExist:
-            return WholesaleCart.objects.none()
-
-    def get_object(self):
-        cart, _ = WholesaleCart.objects.get_or_create(retailer=self.request.user.retailerprofile)
-        return cart
-
-    def list(self, request, *args, **kwargs):
-        instance = self.get_object()
-        serializer = self.get_serializer(instance)
-        return Response(serializer.data)
-
-    @action(detail=True, methods=['post'])
-    def checkout(self, request, pk=None):
-        """
-Copies the Retailer's wholesale cart into a WholesaleOrder.
-        """
-        try:
-            cart = self.get_object()
-        except RetailerProfile.DoesNotExist:
-            return Response({"error": "Retailer profile not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        if not cart.items.exists():
-            return Response({"error": "Your wholesale cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
-        
-        try:
-            delivery_address = cart.retailer.user.customerprofile.address
-            if not delivery_address:
-                raise CustomerProfile.DoesNotExist
-        except CustomerProfile.DoesNotExist:
-             return Response(
+            return Response(
                 {"error": "No delivery address found. Please update your customer profile address."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
-        order_items_to_create = []
-        total_price = 0
-
-        try:
-            with transaction.atomic():
-                order = WholesaleOrder.objects.create(
-                    retailer=cart.retailer,
-                    status=WholesaleOrder.OrderStatus.PENDING,
-                    total_price=0,
-                    delivery_address=delivery_address
-                )
-
-                cart_items = cart.items.all()
-                inventory_ids = [item.inventory_id for item in cart_items]
-                inventories = Inventory.objects.select_for_update().filter(id__in=inventory_ids)
-                inventory_map = {inv.id: inv for inv in inventories}
-
-                for item in cart_items:
-                    inventory = inventory_map.get(item.inventory_id)
-
-                    if not inventory or item.quantity > inventory.stock:
-                        raise ValidationError(f"Sorry, '{item.inventory.product.name}' from wholesaler is out of stock.")
-
-                    inventory.stock -= item.quantity
-                    inventory.save()
-                    price_at_purchase = inventory.price
-                    total_price += (price_at_purchase * item.quantity)
-                    
-                    order_items_to_create.append(
-                        WholesaleOrderItem(
-                            order=order,
-                            inventory=inventory,
-                            quantity=item.quantity,
-                            price_at_purchase=price_at_purchase
-                            # Status defaults to PENDING
-                        )
-                    )
-
-                order.total_price = total_price
-                order.save()
-                WholesaleOrderItem.objects.bulk_create(order_items_to_create)
-                cart.items.all().delete()
-
-            order_serializer = WholesaleOrderSerializer(order)
-            return Response(order_serializer.data, status=status.HTTP_201_CREATED)
-
-        except ValidationError as e:
-            return Response({"error": str(e.detail[0])}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            return Response({"error": f"An error occurred during checkout: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-class WholesaleOrderViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    API endpoint for a Retailer to view their past wholesale orders.
-    ACCESS: Retailers only.
-    """
-    serializer_class = WholesaleOrderSerializer
-    permission_classes = [permissions.IsAuthenticated, IsRetailer]
-
-    def get_queryset(self):
-        try:
-            return WholesaleOrder.objects.filter(retailer=self.request.user.retailerprofile).order_by('-created_at')
-        except RetailerProfile.DoesNotExist:
-            return WholesaleOrder.objects.none()
-
-# =========================================
-# === WHOLESALER-FACING VIEWS (NEW)
-# =========================================
-
-class WholesalerFulfillmentViewSet(viewsets.ModelViewSet):
-    """
-    API endpoint for a Wholesaler to view and UPDATE the status
-    of *individual order items* that belong to them.
-    ACCESS: Wholesalers only.
-    """
-    serializer_class = WholesalerFulfillmentItemSerializer
-    permission_classes = [permissions.IsAuthenticated, IsWholesaler]
-    
-    # Allow GET, PATCH, PUT. Disallow POST, DELETE.
-    http_method_names = ['get', 'patch', 'put', 'head', 'options']
-
-    def get_queryset(self):
-        """
-        Wholesalers can only see and update order items
-        from their inventory.
-        """
-        try:
-            return WholesaleOrderItem.objects.filter(
-                inventory__wholesaler=self.request.user.wholesalerprofile
-            ).select_related(
-                'order', 
-                'order__retailer__user', 
-                'inventory__product'
-            ).order_by('-order__created_at')
-        except WholesalerProfile.DoesNotExist:
-            return WholesaleOrderItem.objects.none()
