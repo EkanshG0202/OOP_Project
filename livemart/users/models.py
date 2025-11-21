@@ -57,6 +57,11 @@ class RetailerProfile(models.Model):
     """Profile for a Retailer, linked to the main User."""
     user = models.OneToOneField(User, on_delete=models.CASCADE, primary_key=True, related_name='retailerprofile')
     shop_name = models.CharField(max_length=100)
+    
+    # --- ADDED for Geocoding ---
+    shop_address = models.CharField(max_length=255, blank=True, help_text="Full address for geocoding")
+    # ---------------------------
+
     location_lat = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     location_lon = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
 
@@ -71,4 +76,3 @@ class WholesalerProfile(models.Model):
 
     def __str__(self):
         return f"Wholesaler: {self.business_name} ({self.user.username})"
-

@@ -59,7 +59,8 @@ class OrderSerializer(serializers.ModelSerializer):
             'total_price', 
             'is_offline_payment', 
             'shipping_address',
-            'items'
+            'items',
+            'scheduled_delivery_date'
         ]
 
 # =========================================

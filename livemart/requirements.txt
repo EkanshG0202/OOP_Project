@@ -5,3 +5,5 @@ dj-rest-auth
 django-allauth
 Pillow
 requests
+geopy 
+razorpay

@@ -1,9 +1,20 @@
 from rest_framework import viewsets, permissions, filters
+from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import Category, Product, Inventory, Feedback
-from .serializers import CategorySerializer, ProductSerializer, InventorySerializer, FeedbackSerializer
+from users.models import RetailerProfile
+from .serializers import (
+    CategorySerializer, 
+    ProductSerializer, 
+    InventorySerializer, 
+    FeedbackSerializer,
+    RetailerListSerializer 
+)
 
-# --- Import our new custom permissions ---
+# --- Import geopy for distance calculation ---
+from geopy.distance import geodesic
+# ---------------------------------------------
+
 from users.permissions import IsCustomer, IsSeller, IsOwnerOfInventory, IsOwnerOfFeedbackOrReadOnly
 
 # --- API Views (Store) ---
@@ -14,7 +25,7 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     """
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
-    permission_classes = [permissions.AllowAny] # Everyone can see categories
+    permission_classes = [permissions.AllowAny]
 
 class ProductViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -24,19 +35,17 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = ProductSerializer
     permission_classes = [permissions.AllowAny]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
-    filterset_fields = ['category', 'is_region_specific'] # Filter by ?category=1
-    search_fields = ['name', 'description'] # Search by ?search=milk
+    filterset_fields = ['category', 'is_region_specific']
+    search_fields = ['name', 'description']
 
-class InventoryViewSet(viewsets.ModelViewSet): # <-- CHANGED from ReadOnlyModelViewSet
+class InventoryViewSet(viewsets.ModelViewSet): 
     """
     API endpoint to view and manage inventory.
-    - ALL users can list and retrieve (read).
-    - SELLERS (Retailer/Wholesaler) can create inventory.
-    - The OWNER of an inventory item can update or delete it.
+    - Supports standard filtering (price, product name).
+    - Supports LOCATION filtering: ?lat=28.7&lon=77.1&radius=5
     """
     serializer_class = InventorySerializer
     
-    # --- This enables Module 3: Search & Navigation ---
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = {
         'product': ['exact'],
@@ -48,41 +57,63 @@ class InventoryViewSet(viewsets.ModelViewSet): # <-- CHANGED from ReadOnlyModelV
 
     def get_queryset(self):
         """
-        - Customers/Anonymous users see all *in-stock* items.
-        - A Seller (Retailer/Wholesaler) sees *all* of their own items,
-          including out-of-stock items, so they can manage them.
+        Standard queryset logic + Distance Filtering.
         """
         user = self.request.user
+        queryset = Inventory.objects.all()
         
+        # 1. Role-based Base Filtering
         if user.is_authenticated and user.role in ['RETAILER', 'WHOLESALER']:
             if user.role == 'RETAILER':
-                return Inventory.objects.filter(retailer=user.retailerprofile)
+                queryset = Inventory.objects.filter(retailer=user.retailerprofile)
             else: # Wholesaler
-                return Inventory.objects.filter(wholesaler=user.wholesalerprofile)
-        
-        # For customers or anonymous users
-        return Inventory.objects.filter(stock__gt=0)
+                queryset = Inventory.objects.filter(wholesaler=user.wholesalerprofile)
+        else:
+            # For customers/anonymous: Only show in-stock items
+            queryset = Inventory.objects.filter(stock__gt=0)
+
+        # 2. Location-based Filtering (The New Feature)
+        user_lat = self.request.query_params.get('lat')
+        user_lon = self.request.query_params.get('lon')
+        radius = self.request.query_params.get('radius')
+
+        if user_lat and user_lon and radius:
+            try:
+                user_coords = (float(user_lat), float(user_lon))
+                radius_km = float(radius)
+                
+                # We must filter in Python because SQLite doesn't support geo-math
+                nearby_ids = []
+                
+                for item in queryset:
+                    # We currently only filter Retailer inventory by location
+                    # (Wholesalers don't have lat/lon columns yet)
+                    if item.retailer and item.retailer.location_lat and item.retailer.location_lon:
+                        shop_coords = (item.retailer.location_lat, item.retailer.location_lon)
+                        
+                        distance = geodesic(user_coords, shop_coords).km
+                        
+                        if distance <= radius_km:
+                            nearby_ids.append(item.id)
+                
+                # Return only the items that passed the distance check
+                queryset = queryset.filter(id__in=nearby_ids)
+                
+            except ValueError:
+                pass # If params are invalid, ignore location filter
+
+        return queryset
 
     def get_permissions(self):
-        """
-        Instantiates and returns the list of permissions that this view requires.
-        - list, retrieve: AllowAny
-        - create: IsAuthenticated, IsSeller
-        - update, destroy: IsAuthenticated, IsSeller, IsOwnerOfInventory
-        """
         if self.action in ['list', 'retrieve']:
             permission_classes = [permissions.AllowAny]
         elif self.action == 'create':
             permission_classes = [permissions.IsAuthenticated, IsSeller]
-        else: # 'update', 'partial_update', 'destroy'
+        else: 
             permission_classes = [permissions.IsAuthenticated, IsSeller, IsOwnerOfInventory]
         return [permission() for permission in permission_classes]
 
     def perform_create(self, serializer):
-        """
-        Automatically link new inventory to the logged-in seller.
-        The 'product' is set via 'product_id' in the serializer.
-        """
         user = self.request.user
         if user.role == 'RETAILER':
             serializer.save(retailer=user.retailerprofile)
@@ -93,31 +124,20 @@ class InventoryViewSet(viewsets.ModelViewSet): # <-- CHANGED from ReadOnlyModelV
 class FeedbackViewSet(viewsets.ModelViewSet):
     """
     API endpoint for reading and writing product feedback.
-    - ALL users can read feedback.
-    - CUSTOMERS can create feedback.
-    - The OWNER of feedback can update or delete it.
     """
     queryset = Feedback.objects.all()
     serializer_class = FeedbackSerializer
     
     def get_permissions(self):
-        """
-        Instantiates and returns the list of permissions that this view requires.
-        - list, retrieve: AllowAny
-        - create: IsAuthenticated, IsCustomer
-        - update, destroy: IsAuthenticated, IsCustomer, IsOwnerOfFeedbackOrReadOnly
-        """
         if self.action in ['list', 'retrieve']:
             permission_classes = [permissions.AllowAny]
         elif self.action == 'create':
             permission_classes = [permissions.IsAuthenticated, IsCustomer]
-        else: # 'update', 'partial_update', 'destroy'
+        else: 
             permission_classes = [permissions.IsAuthenticated, IsOwnerOfFeedbackOrReadOnly]
         return [permission() for permission in permission_classes]
 
     def get_queryset(self):
-        # Allow filtering feedback by product
-        # e.g., /api/feedback/?product=1
         queryset = super().get_queryset()
         product_id = self.request.query_params.get('product')
         if product_id:
@@ -125,5 +145,53 @@ class FeedbackViewSet(viewsets.ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
-        # Automatically set the customer to the logged-in user
         serializer.save(customer=self.request.user)
+
+
+class RetailerViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API to list shops.
+    Supports location filtering: ?lat=12.34&lon=56.78&radius=10
+    """
+    serializer_class = RetailerListSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def get_queryset(self):
+        return RetailerProfile.objects.all()
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        
+        user_lat = request.query_params.get('lat')
+        user_lon = request.query_params.get('lon')
+        radius = float(request.query_params.get('radius', 50)) 
+        
+        if not user_lat or not user_lon:
+            serializer = self.get_serializer(queryset, many=True)
+            return Response(serializer.data)
+
+        try:
+            user_coords = (float(user_lat), float(user_lon))
+        except ValueError:
+             return Response({"error": "Invalid lat/lon format"}, status=400)
+
+        nearby_retailers = []
+        
+        for retailer in queryset:
+            if retailer.location_lat and retailer.location_lon:
+                shop_coords = (retailer.location_lat, retailer.location_lon)
+                distance = geodesic(user_coords, shop_coords).km
+                
+                if distance <= radius:
+                    retailer.distance_km = round(distance, 2)
+                    nearby_retailers.append(retailer)
+
+        nearby_retailers.sort(key=lambda x: x.distance_km)
+
+        page = self.paginate_queryset(nearby_retailers)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(nearby_retailers, many=True)
+        return Response(serializer.data)

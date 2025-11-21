@@ -53,6 +53,14 @@ class Order(models.Model):
     is_offline_payment = models.BooleanField(default=False)
     shipping_address = models.TextField()
 
+    # --- ADDED for Calendar Integration ---
+    scheduled_delivery_date = models.DateTimeField(
+        null=True, 
+        blank=True, 
+        help_text="For offline orders: The scheduled date/time for pickup or delivery."
+    )
+    # --------------------------------------
+
     def __str__(self):
         return f"Order {self.id} by {self.customer.user.username} ({self.status})"
 
@@ -63,7 +71,6 @@ class OrderItem(models.Model):
     quantity = models.PositiveIntegerField()
     price_at_purchase = models.DecimalField(max_digits=10, decimal_places=2)
     
-    # --- ADDED ---
     # This is the fulfillment status for this specific item
     status = models.CharField(
         max_length=20, 
@@ -124,7 +131,6 @@ class WholesaleOrderItem(models.Model):
     quantity = models.PositiveIntegerField()
     price_at_purchase = models.DecimalField(max_digits=10, decimal_places=2)
 
-    # --- ADDED ---
     # Fulfillment status for this specific item
     status = models.CharField(
         max_length=20, 

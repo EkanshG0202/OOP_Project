@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import Category, Product, Inventory, Feedback
-from users.models import User # We'll need this for feedback
+from users.models import User, RetailerProfile # --- UPDATED IMPORT ---
 
 # --- API Serializers (Store) ---
 
@@ -47,7 +47,7 @@ class InventorySerializer(serializers.ModelSerializer):
             'price', 
             'stock',
             'available_via_wholesaler',
-            'availability_date', # <--- ADDED THIS FIELD
+            'availability_date',
         ]
         # --- ADDED ---
         # The view will set retailer/wholesaler automatically from the user
@@ -61,3 +61,13 @@ class FeedbackSerializer(serializers.ModelSerializer):
         model = Feedback
         fields = ['id', 'product', 'customer', 'customer_name', 'rating', 'comment', 'created_at']
         read_only_fields = ['customer'] # Customer is set automatically
+
+# --- ADDED: Serializer for "Shops Near Me" ---
+class RetailerListSerializer(serializers.ModelSerializer):
+    # This field is NOT in the database; it's calculated in the View
+    distance_km = serializers.FloatField(read_only=True)
+
+    class Meta:
+        model = RetailerProfile
+        # We return the user ID so the frontend can filter inventory by this retailer
+        fields = ['user_id', 'shop_name', 'shop_address', 'location_lat', 'location_lon', 'distance_km']
