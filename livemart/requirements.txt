@@ -7,3 +7,5 @@ Pillow
 requests
 geopy 
 razorpay
+PyJWT
+cryptography

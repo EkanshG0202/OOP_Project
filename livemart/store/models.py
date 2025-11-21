@@ -44,12 +44,22 @@ class Inventory(models.Model):
     # For Module 2: Retailer's proxy availability
     available_via_wholesaler = models.BooleanField(default=False)
 
+    # --- MERGED FIELD ---
+    availability_date = models.DateField(null=True, blank=True, help_text="Date when the item will be available if out of stock.")
+    # --------------------
+
     class Meta:
         verbose_name_plural = "Inventories"
 
     def __str__(self):
-        seller = self.retailer or self.wholesaler
-        return f"{self.product.name} at {seller.user.username} (Stock: {self.stock})"
+        # Handle cases where retailer or wholesaler might be None safely
+        seller_name = "Unknown Seller"
+        if self.retailer:
+            seller_name = self.retailer.shop_name
+        elif self.wholesaler:
+            seller_name = self.wholesaler.business_name
+            
+        return f"{self.product.name} at {seller_name} (Stock: {self.stock})"
 
 class Feedback(models.Model):
     """Model for product-specific feedback from customers."""
@@ -64,15 +74,3 @@ class Feedback(models.Model):
 
     def __str__(self):
         return f"Feedback for {self.product.name} by {self.customer.username}"
-
-# ... existing imports ...
-
-class Inventory(models.Model):
-    # ... existing fields (product, retailer, wholesaler, price, stock) ...
-    
-    # --- ADD THIS FIELD ---
-    availability_date = models.DateField(null=True, blank=True, help_text="Date when the item will be available if out of stock.")
-    # ----------------------
-
-    def __str__(self):
-        return f"{self.product.name} - {self.price}"

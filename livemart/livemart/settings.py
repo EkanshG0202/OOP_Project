@@ -26,6 +26,10 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
 
+    # --- ADDED: CORS Headers App ---
+    'corsheaders',
+    # -------------------------------
+
     # Our Apps
     'users',
     'store',
@@ -45,6 +49,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # --- ADDED: CORS Middleware (Must be at the top) ---
+    'corsheaders.middleware.CorsMiddleware',
+    # ---------------------------------------------------
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -55,6 +62,14 @@ MIDDLEWARE = [
     # Allauth middleware
     "allauth.account.middleware.AccountMiddleware",
 ]
+
+# --- ADDED: CORS Configuration ---
+# Allows requests from your React frontend running on port 5173
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+# ---------------------------------
 
 ROOT_URLCONF = 'livemart.urls'
 
@@ -160,7 +175,7 @@ REST_AUTH = {
 # --- Allauth settings for Email Verification (as OTP) ---
 
 # This is the key setting: "mandatory" requires email verification to log in.
-ACCOUNT_EMAIL_VERIFICATION = 'mandatory'
+ACCOUNT_EMAIL_VERIFICATION = 'none'
 
 # Users will be required to provide an email during registration
 ACCOUNT_EMAIL_REQUIRED = True
@@ -175,10 +190,6 @@ LOGIN_ON_EMAIL_CONFIRMATION = True
 ACCOUNT_CONFIRM_EMAIL_ON_GET = True
 
 # We're using the console backend for testing (already in your settings)
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-
-
-# 4. Required by dj-rest-auth (sends emails to console)
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
 # 5. Required by allauth
