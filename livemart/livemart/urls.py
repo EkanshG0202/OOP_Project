@@ -10,7 +10,7 @@ from store.views import (
     ProductViewSet, 
     InventoryViewSet, 
     FeedbackViewSet,
-    RetailerViewSet # <--- ADDED for Location Feature
+    RetailerViewSet
 )
 
 # --- Import ViewSets from Orders ---
@@ -18,16 +18,16 @@ from orders.views import (
     CartViewSet, 
     OrderViewSet, 
     CartItemViewSet,
-    RetailerOrderViewSet,       # <--- Restored
-    RetailerOrderItemViewSet,   # <--- Restored
-    WholesaleCartItemViewSet,   # <--- Restored
-    WholesaleCartViewSet,       # <--- Restored
-    WholesaleOrderViewSet,      # <--- Restored
-    WholesalerFulfillmentViewSet # <--- Restored
+    RetailerOrderViewSet,
+    RetailerOrderItemViewSet,
+    WholesaleCartItemViewSet,
+    WholesaleCartViewSet,
+    WholesaleOrderViewSet,
+    WholesalerFulfillmentViewSet
 )
 
 # --- Import Views from Users ---
-from users.views import GoogleLogin # <--- ADDED for Social Login
+from users.views import GoogleLogin
 
 # --- API URL Routing ---
 router = DefaultRouter()
@@ -37,7 +37,7 @@ router.register(r'categories', CategoryViewSet, basename='category')
 router.register(r'products', ProductViewSet, basename='product')
 router.register(r'inventory', InventoryViewSet, basename='inventory')
 router.register(r'feedback', FeedbackViewSet, basename='feedback')
-router.register(r'shops', RetailerViewSet, basename='shop') # <--- ADDED: Shops Near Me
+router.register(r'shops', RetailerViewSet, basename='shop')
 
 # Orders App (Customer)
 router.register(r'orders', OrderViewSet, basename='order')
@@ -65,11 +65,14 @@ urlpatterns = [
     
     # --- Authentication URLs ---
     path('api/auth/', include('dj_rest_auth.urls')),
-    
-    # Registration (Uses your CustomRegisterSerializer from settings.py)
     path('api/auth/registration/', include('dj_rest_auth.registration.urls')),
     
+    # --- REQUIRED FIX: Add standard allauth URLs so internal reverse() lookups work ---
+    path('accounts/', include('allauth.urls')),
+    
     # --- Social Login URL ---
-    path('api/auth/google/', GoogleLogin.as_view(), name='google_login'),]
+    path('api/auth/google/', GoogleLogin.as_view(), name='google_login'),
+]
+
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
