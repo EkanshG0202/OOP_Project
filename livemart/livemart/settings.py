@@ -1,4 +1,5 @@
 from pathlib import Path
+import os # Imported os to read environment variables if you choose to use them
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -166,22 +167,24 @@ REST_FRAMEWORK = {
     ]
 }
 
-# --- ADDED THIS BLOCK ---
 # 3. Tell dj-rest-auth to use our new custom registration serializer
 REST_AUTH = {
     'REGISTER_SERIALIZER': 'users.serializers.CustomRegisterSerializer',
 }
-# --- END ADDED BLOCK ---
+
 # --- Allauth settings for Email Verification (as OTP) ---
 
-# This is the key setting: "mandatory" requires email verification to log in.
-ACCOUNT_EMAIL_VERIFICATION = 'none'
+# "mandatory" requires email verification to log in.
+ACCOUNT_EMAIL_VERIFICATION = 'mandatory'
 
 # Users will be required to provide an email during registration
 ACCOUNT_EMAIL_REQUIRED = True
 
-# Allows users to log in using either their username or email
-ACCOUNT_AUTHENTICATION_METHOD = 'username_email'
+# Allows users to log in using email
+ACCOUNT_AUTHENTICATION_METHOD = 'email'
+
+# Ensure username is still required for the database schema
+ACCOUNT_USERNAME_REQUIRED = True
 
 # Optional: Logs the user in immediately after they click the verification link
 LOGIN_ON_EMAIL_CONFIRMATION = True
@@ -189,8 +192,37 @@ LOGIN_ON_EMAIL_CONFIRMATION = True
 # Optional: Confirms the email just by clicking the link (no "Confirm" button)
 ACCOUNT_CONFIRM_EMAIL_ON_GET = True
 
-# We're using the console backend for testing (already in your settings)
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+# --- FIX 2: Added Authentication Backends ---
+# This allows allauth to intercept the login and authenticate via email
+AUTHENTICATION_BACKENDS = [
+    # Needed to login by username in Django admin, regardless of `allauth`
+    'django.contrib.auth.backends.ModelBackend',
+
+    # `allauth` specific authentication methods, such as login by e-mail
+    'allauth.account.auth_backends.AuthenticationBackend',
+]
 
 # 5. Required by allauth
 SITE_ID = 1
+
+# =========================================================
+# === SMTP EMAIL SETTINGS (For Sending Real Emails) ===
+# =========================================================
+
+# 1. Set the backend to SMTP
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+
+# 2. Host settings (Example for Gmail)
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+
+# 3. YOUR CREDENTIALS (REPLACE THESE!)
+# Do NOT use your real login password. 
+# Go to your Google Account -> Security -> 2-Step Verification -> App Passwords
+# Create a new App Password and paste it below.
+EMAIL_HOST_USER = 'ekanshgupta0202@gmail.com' 
+EMAIL_HOST_PASSWORD = 'tcfvoncbaovxxauo'
+
+# 4. Default Sender
+DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
