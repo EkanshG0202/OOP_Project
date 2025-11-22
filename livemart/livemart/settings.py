@@ -1,5 +1,5 @@
 from pathlib import Path
-import os # Imported os to read environment variables if you choose to use them
+import os 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -45,6 +45,10 @@ INSTALLED_APPS = [
     'allauth',
     'allauth.account',
     'allauth.socialaccount',
+    
+    # --- GOOGLE PROVIDER ADDED ---
+    'allauth.socialaccount.providers.google',
+    
     'dj_rest_auth',
     'dj_rest_auth.registration',
 ]
@@ -217,12 +221,30 @@ EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 
-# 3. YOUR CREDENTIALS (REPLACE THESE!)
-# Do NOT use your real login password. 
-# Go to your Google Account -> Security -> 2-Step Verification -> App Passwords
-# Create a new App Password and paste it below.
+# 3. YOUR CREDENTIALS
 EMAIL_HOST_USER = 'ekanshgupta0202@gmail.com' 
 EMAIL_HOST_PASSWORD = 'tcfvoncbaovxxauo'
 
 # 4. Default Sender
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+
+# =========================================================
+# === SOCIAL ACCOUNT SETTINGS (Google) ===
+# =========================================================
+
+SOCIALACCOUNT_PROVIDERS = {
+    'google': {
+        'APP': {
+            'client_id': '681911426960-7ccp3t0up5ldpnr0lgl1p28eq57nm912.apps.googleusercontent.com',     # <--- PASTE FROM GOOGLE CONSOLE
+            'secret': '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',    # <--- PASTE FROM GOOGLE CONSOLE
+            'key': ''
+        },
+        'SCOPE': [
+            'profile',
+            'email',
+        ],
+        'AUTH_PARAMS': {
+            'access_type': 'online',
+        }
+    }
+}
